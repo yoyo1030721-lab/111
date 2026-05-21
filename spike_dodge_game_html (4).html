@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D 躲尖刺</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #050816;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      user-select: none;
+      touch-action: none;
+    }
+    canvas { display: block; }
+    #ui {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      color: white;
+    }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px 0;
+      font-size: 18px;
+      font-weight: 700;
+      text-shadow: 0 2px 8px rgba(0,0,0,.5);
+      flex-wrap: wrap;
+    }
+    .hint {
+      position: absolute;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      width: min(92vw, 900px);
+      text-align: center;
+      font-size: 14px;
+      color: rgba(255,255,255,.88);
+      background: rgba(10,15,30,.35);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 999px;
+      padding: 8px 12px;
+      backdrop-filter: blur(6px);
+    }
+    .center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      background: rgba(0,0,0,.45);
+      backdrop-filter: blur(4px);
+      pointer-events: auto;
+      text-align: center;
+    }
+    .hidden { display: none; }
+    button {
+      margin-top: 12px;
+      border: none;
+      border-radius: 14px;
+      padding: 12px 24px;
+      font-size: 18px;
+      font-weight: 800;
+      cursor: pointer;
+      background: linear-gradient(135deg, #67e8f9, #60a5fa);
+      color: #08101f;
+    }
+    .panel {
+      margin-top: 10px;
+      font-size: 14px;
+      color: rgba(255,255,255,.86);
+      line-height: 1.6;
+      max-width: 560px;
+      padding: 0 16px;
+    }
+  </style>
+</head>
+<body>
+<div id="ui">
+  <div class="top">
+    <div id="score">分數：0</div>
+    <div id="best">最高：0</div>
+    <div id="items">道具：0</div>
+  </div>
+
+  <div class="center" id="menu">
+    <h1>3D 躲尖刺</h1>
+    <div class="panel">
+      左右移動、跳躍閃避尖刺，收集更多道具拿分數。
+      <br>新增道具：金幣、磁鐵、雙倍分數、無敵星星、護盾、加速鞋、額外生命。
+    </div>
+    <button id="startBtn">開始遊戲</button>
+  </div>
+
+  <div class="hint">← → 移動｜空白鍵跳躍｜手機點按或滑動｜磁鐵可吸道具，星星可無敵</div>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165/build/three.module.js';
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x050816, 18, 95);
+
+const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 5.2, 10.5);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const hemi = new THREE.HemisphereLight(0x88ccff, 0x223344, 2.0);
+scene.add(hemi);
+
+const dir = new THREE.DirectionalLight(0xffffff, 2.2);
+dir.position.set(5, 12, 8);
+scene.add(dir);
+
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(18, 220),
+  new THREE.MeshStandardMaterial({ color: 0x14213d, roughness: 0.9, metalness: 0.05 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.z = -95;
+scene.add(floor);
+
+const laneX = [-4, -2, 0, 2, 4];
+
+const player = new THREE.Group();
+scene.add(player);
+
+const body = new THREE.Mesh(
+  new THREE.BoxGeometry(1.1, 1.5, 1.1),
+  new THREE.MeshStandardMaterial({ color: 0x67e8f9, roughness: 0.5, metalness: 0.1 })
+);
+body.position.y = 1;
+player.add(body);
+
+const head = new THREE.Mesh(
+  new THREE.BoxGeometry(0.8, 0.55, 0.8),
+  new THREE.MeshStandardMaterial({ color: 0xcffafe, roughness: 0.5, metalness: 0.1 })
+);
+head.position.y = 2;
+player.add(head);
+
+player.position.z = 5;
+
+let currentLane = 2;
+let targetX = 0;
+let velocityY = 0;
+let grounded = true;
+
+let score = 0;
+let best = Number(localStorage.getItem('best3dSpike') || 0);
+let lives = 1;
+let magnetPower = 0;
+let starPower = 0;
+let doublePower = 0;
+let shieldPower = 0;
+let speedPower = 0;
+let extraLifeReady = false;
+
+const spikes = [];
+const items = [];
+
+function laneForRandom() {
+  return laneX[Math.floor(Math.random() * laneX.length)];
+}
+
+function makeSpike() {
+  const g = new THREE.ConeGeometry(0.8, 2, 4);
+  const m = new THREE.MeshStandardMaterial({ color: 0xff4d6d, emissive: 0x661122, roughness: 0.35 });
+  const s = new THREE.Mesh(g, m);
+  s.rotation.x = Math.PI;
+  s.position.set(laneForRandom(), 1, -82);
+  scene.add(s);
+  spikes.push(s);
+}
+
+function glowMaterial(base, glow) {
+  return new THREE.MeshStandardMaterial({
+    color: base,
+    emissive: glow,
+    emissiveIntensity: 1.8,
+    roughness: 0.18,
+    metalness: 0.45
+  });
+}
+
+function glowAura(color, size = 0.7) {
+  return new THREE.Mesh(
+    new THREE.SphereGeometry(size, 18, 18),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.18
+    })
+  );
+}
+
+function coinModel() {
+  const group = new THREE.Group();
+  const outer = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.34, 0.34, 0.12, 28),
+    glowMaterial(0xffd166, 0xffaa00)
+  );
+  const inner = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.2, 0.13, 20),
+    glowMaterial(0xfff3c4, 0xffdd88)
+  );
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.27, 0.03, 8, 24),
+    new THREE.MeshStandardMaterial({ color: 0xfffbeb, roughness: 0.18, metalness: 0.5 })
+  );
+  rim.rotation.x = Math.PI / 2;
+  group.add(outer, inner, rim, glowAura(0xffcc33,0.55));
+  return group;
+}
+
+function magnetModel() {
+  const group = new THREE.Group();
+  const left = new THREE.Mesh(
+    new THREE.TorusGeometry(0.28, 0.08, 10, 18, Math.PI),
+    glowMaterial(0xc084fc, 0xaa33ff)
+  );
+  left.rotation.z = Math.PI / 2;
+  left.position.x = -0.13;
+  const right = left.clone();
+  right.position.x = 0.13;
+  right.rotation.z = -Math.PI / 2;
+  const bar = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 0.34, 0.12),
+    glowMaterial(0xf9a8d4, 0xff66aa)
+  );
+  bar.position.y = -0.05;
+  group.add(left, right, bar, glowAura(0xcc88ff,0.6));
+  return group;
+}
+
+function doubleModel() {
+  const group = new THREE.Group();
+  const a = new THREE.Mesh(
+    new THREE.BoxGeometry(0.28, 0.36, 0.12),
+    glowMaterial(0x34d399, 0x00ff99)
+  );
+  const b = a.clone();
+  a.position.x = -0.12;
+  b.position.x = 0.12;
+  const line = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 0.72, 0.1),
+    glowMaterial(0xa7f3d0, 0x55ffbb)
+  );
+  group.add(a, b, line, glowAura(0x33ffaa,0.55));
+  return group;
+}
+
+function starModel() {
+  const group = new THREE.Group();
+  const core = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.36, 0),
+    glowMaterial(0xfde047, 0xffee55)
+  );
+  const glow = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.52, 0),
+    new THREE.MeshStandardMaterial({ color: 0xfff7c2, emissive: 0x665500, transparent: true, opacity: 0.22, roughness: 0.4 })
+  );
+  group.add(glow, core, glowAura(0xffee55,0.75));
+  return group;
+}
+
+function shieldModel() {
+  const group = new THREE.Group();
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.36, 0.08, 10, 24),
+    glowMaterial(0x60a5fa, 0x3399ff)
+  );
+  ring.rotation.x = Math.PI / 2;
+  const core = new THREE.Mesh(
+    new THREE.CircleGeometry(0.22, 20),
+    new THREE.MeshStandardMaterial({ color: 0xdbeafe, emissive: 0x234366, side: THREE.DoubleSide, roughness: 0.15 })
+  );
+  core.rotation.x = Math.PI / 2;
+  group.add(ring, core, glowAura(0x66bbff,0.65));
+  return group;
+}
+
+function bootsModel() {
+  const group = new THREE.Group();
+  const sole = new THREE.Mesh(
+    new THREE.BoxGeometry(0.34, 0.1, 0.18),
+    glowMaterial(0xfb7185, 0xff4477)
+  );
+  const leg = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.1, 0.34, 10),
+    new THREE.MeshStandardMaterial({ color: 0xff9fb0, emissive: 0x5a1822, roughness: 0.3 })
+  );
+  leg.position.y = 0.18;
+  sole.position.y = -0.08;
+  group.add(leg, sole, glowAura(0xff6699,0.5));
+  return group;
+}
+
+function heartModel() {
+  const group = new THREE.Group();
+  const ballA = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 16, 16),
+    glowMaterial(0xf43f5e, 0xff3355)
+  );
+  const ballB = ballA.clone();
+  const tip = new THREE.Mesh(
+    new THREE.ConeGeometry(0.24, 0.36, 16),
+    new THREE.MeshStandardMaterial({ color: 0xf43f5e, emissive: 0x5b1120, roughness: 0.28 })
+  );
+  ballA.position.set(-0.13, 0.08, 0);
+  ballB.position.set(0.13, 0.08, 0);
+  tip.position.y = -0.08;
+  tip.rotation.z = Math.PI;
+  group.add(ballA, ballB, tip, glowAura(0xff4466,0.58));
+  return group;
+}
+
+function makeItem(type) {
+  let mesh;
+  if (type === 'coin') mesh = coinModel();
+  else if (type === 'magnet') mesh = magnetModel();
+  else if (type === 'double') mesh = doubleModel();
+  else if (type === 'star') mesh = starModel();
+  else if (type === 'shield') mesh = shieldModel();
+  else if (type === 'boots') mesh = bootsModel();
+  else mesh = heartModel();
+
+  mesh.position.set(laneForRandom(), 1.5, -82);
+  mesh.scale.setScalar(0.86);
+  scene.add(mesh);
+  items.push({ mesh, type });
+}
+
+function resetGame() {
+  score = 0;
+  lives = 1;
+  currentLane = 2;
+  targetX = 0;
+  player.position.set(0, 0, 5);
+  velocityY = 0;
+  grounded = true;
+
+  magnetPower = 0;
+  starPower = 0;
+  doublePower = 0;
+  shieldPower = 0;
+  speedPower = 0;
+  extraLifeReady = false;
+
+  for (const s of spikes) scene.remove(s);
+  for (const it of items) scene.remove(it.mesh);
+  spikes.length = 0;
+  items.length = 0;
+
+  spawnTimer = 0;
+  itemTimer = 0;
+  running = true;
+  menu.classList.add('hidden');
+  updateHud();
+}
+
+function gameOver() {
+  running = false;
+  best = Math.max(best, Math.floor(score));
+  localStorage.setItem('best3dSpike', String(best));
+  bestEl.textContent = '最高：' + best;
+  menu.classList.remove('hidden');
+  startBtn.textContent = '重新開始';
+}
+
+function jump() {
+  if (!grounded) return;
+  grounded = false;
+  velocityY = 0.24 + (speedPower > 0 ? 0.03 : 0);
+}
+
+function updateHud() {
+  scoreEl.textContent = '分數：' + Math.floor(score);
+  bestEl.textContent = '最高：' + best;
+  const effects = [];
+  if (magnetPower > 0) effects.push('磁鐵');
+  if (doublePower > 0) effects.push('雙倍');
+  if (starPower > 0) effects.push('無敵');
+  if (shieldPower > 0) effects.push('護盾');
+  if (speedPower > 0) effects.push('加速');
+  if (extraLifeReady) effects.push('復活');
+  itemsEl.textContent = '道具：' + items.length + (effects.length ? '｜' + effects.join('、') : '');
+}
+
+function randomItemType() {
+  const r = Math.random();
+  if (r < 0.34) return 'coin';
+  if (r < 0.48) return 'magnet';
+  if (r < 0.62) return 'double';
+  if (r < 0.76) return 'star';
+  if (r < 0.86) return 'shield';
+  if (r < 0.95) return 'boots';
+  return 'heart';
+}
+
+function magnetAttract(itemMesh, dt) {
+  if (magnetPower <= 0) return;
+  const dx = player.position.x - itemMesh.position.x;
+  const dz = player.position.z - itemMesh.position.z;
+  itemMesh.position.x += dx * 7 * dt;
+  itemMesh.position.z += dz * 5 * dt;
+}
+
+function collectItem(type) {
+  if (type === 'coin') {
+    score += doublePower > 0 ? 100 : 50;
+  } else if (type === 'magnet') {
+    magnetPower = 8;
+    score += 25;
+  } else if (type === 'double') {
+    doublePower = 10;
+    score += 30;
+  } else if (type === 'star') {
+    starPower = 7;
+    score += 40;
+  } else if (type === 'shield') {
+    shieldPower = 6;
+    score += 20;
+  } else if (type === 'boots') {
+    speedPower = 6;
+    score += 20;
+  } else if (type === 'heart') {
+    extraLifeReady = true;
+    score += 35;
+  }
+}
+
+function handleSpikeHit() {
+  if (starPower > 0) return;
+  if (shieldPower > 0) {
+    shieldPower = 0;
+    return;
+  }
+  if (extraLifeReady) {
+    extraLifeReady = false;
+    return;
+  }
+  lives -= 1;
+  if (lives <= 0) gameOver();
+}
+
+const menu = document.getElementById('menu');
+const startBtn = document.getElementById('startBtn');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const itemsEl = document.getElementById('items');
+
+startBtn.onclick = resetGame;
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') currentLane = Math.max(0, currentLane - 1);
+  if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') currentLane = Math.min(4, currentLane + 1);
+  if (e.key === ' ' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!running) resetGame();
+    else jump();
+  }
+});
+
+let touchX = 0;
+window.addEventListener('pointerdown', (e) => {
+  touchX = e.clientX;
+  if (!running) {
+    resetGame();
+    return;
+  }
+  if (e.clientY < innerHeight * 0.35) jump();
+  else if (e.clientX < innerWidth * 0.5) currentLane = Math.max(0, currentLane - 1);
+  else currentLane = Math.min(4, currentLane + 1);
+});
+window.addEventListener('pointermove', (e) => {
+  if (!running) return;
+  const dx = e.clientX - touchX;
+  if (Math.abs(dx) > 50) {
+    currentLane = Math.max(0, Math.min(4, currentLane + (dx > 0 ? 1 : -1)));
+    touchX = e.clientX;
+  }
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+});
+
+let spawnTimer = 0;
+let itemTimer = 0;
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.033);
+
+  if (running) {
+    const speed = 30 + (speedPower > 0 ? 10 : 0);
+
+    score += dt * (doublePower > 0 ? 20 : 10);
+    magnetPower = Math.max(0, magnetPower - dt);
+    starPower = Math.max(0, starPower - dt);
+    doublePower = Math.max(0, doublePower - dt);
+    shieldPower = Math.max(0, shieldPower - dt);
+    speedPower = Math.max(0, speedPower - dt);
+
+    targetX = laneX[currentLane];
+    player.position.x += (targetX - player.position.x) * Math.min(1, dt * 12);
+    velocityY -= 0.012;
+    player.position.y += velocityY * 60 * dt;
+    if (player.position.y <= 0) {
+      player.position.y = 0;
+      velocityY = 0;
+      grounded = true;
+    }
+
+    spawnTimer -= dt;
+    itemTimer -= dt;
+
+    if (spawnTimer <= 0) {
+      makeSpike();
+      spawnTimer = Math.max(0.22, 0.82 - score / 420);
+    }
+
+    if (itemTimer <= 0) {
+      makeItem(randomItemType());
+      itemTimer = 0.88 + Math.random() * 0.72;
+    }
+
+    for (let i = spikes.length - 1; i >= 0; i--) {
+      const s = spikes[i];
+      s.position.z += speed * dt;
+      s.rotation.y += dt * 2.2;
+      if (s.position.distanceTo(player.position) < 1.25) {
+        scene.remove(s);
+        spikes.splice(i, 1);
+        handleSpikeHit();
+        continue;
+      }
+      if (s.position.z > 14) {
+        scene.remove(s);
+        spikes.splice(i, 1);
+      }
+    }
+
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      const obj = it.mesh;
+      magnetAttract(obj, dt);
+      obj.position.z += (speed - 4) * dt;
+      obj.rotation.y += dt * 4;
+      obj.rotation.x += dt * 2;
+      if (obj.position.distanceTo(player.position) < 1.6) {
+        collectItem(it.type);
+        scene.remove(obj);
+        items.splice(i, 1);
+        continue;
+      }
+      if (obj.position.z > 14) {
+        scene.remove(obj);
+        items.splice(i, 1);
+      }
+    }
+
+    body.material.color.set(starPower > 0 ? 0xfde047 : 0x67e8f9);
+    head.material.color.set(starPower > 0 ? 0xfff2a6 : 0xcffafe);
+
+    camera.position.x += (player.position.x - camera.position.x) * dt * 3.2;
+    camera.lookAt(player.position.x, 1, -8);
+
+    updateHud();
+  }
+
+  renderer.render(scene, camera);
+}
+
+updateHud();
+resetGame();
+running = false;
+menu.classList.remove('hidden');
+animate();
+</script>
+</body>
+</html>
